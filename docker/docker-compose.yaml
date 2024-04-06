@@ -1,0 +1,10 @@
+services:
+  postgres:
+    image: postgres:10-alpine3.16
+    environment:
+      POSTGRES_DB: "testdb"
+      POSTGRES_USER: "test_user"
+      POSTGRES_PASSWORD: "test_password"
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
+    ports:
+      - "5432:5432"

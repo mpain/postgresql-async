@@ -17,38 +17,64 @@
 package com.github.mauricio.async.db.postgresql.parsers
 
 import com.github.mauricio.async.db.exceptions.UnsupportedAuthenticationMethodException
-import com.github.mauricio.async.db.postgresql.messages.backend.{AuthenticationChallengeMD5, AuthenticationChallengeCleartextMessage, AuthenticationOkMessage, ServerMessage}
-import io.netty.buffer.ByteBuf
+import com.github.mauricio.async.db.postgresql.messages.backend._
+import com.github.mauricio.async.db.postgresql.sasl.SaslEngine
+import com.github.mauricio.async.db.postgresql.sasl.ScramMessages.{ParseScramMessageOps, ServerFinalMessage, ServerFirstMessage}
+import com.github.mauricio.async.db.util.ByteBufferUtils
+import io.netty.buffer.{ByteBuf, Unpooled}
+
+import java.nio.charset.Charset
 
 object AuthenticationStartupParser extends MessageParser {
 
-  val AuthenticationOk = 0
-  val AuthenticationKerberosV5 = 2
+  val AuthenticationOk                = 0
+  val AuthenticationKerberosV5        = 2
   val AuthenticationCleartextPassword = 3
-  val AuthenticationMD5Password = 5
-  val AuthenticationSCMCredential = 6
-  val AuthenticationGSS = 7
-  val AuthenticationGSSContinue = 8
-  val AuthenticationSSPI = 9
+  val AuthenticationMD5Password       = 5
+  val AuthenticationSCMCredential     = 6
+  val AuthenticationGSS               = 7
+  val AuthenticationGSSContinue       = 8
+  val AuthenticationSSPI              = 9
+  val AuthenticationSASL              = 10
+  val AuthenticationSASLContinue      = 11
+  val AuthenticationSASLFinal         = 12
 
   override def parseMessage(b: ByteBuf): ServerMessage = {
 
     val authenticationType = b.readInt()
 
     authenticationType match {
-      case AuthenticationOk => AuthenticationOkMessage.Instance
+      case AuthenticationOk                => AuthenticationOkMessage.Instance
       case AuthenticationCleartextPassword => AuthenticationChallengeCleartextMessage.Instance
-      case AuthenticationMD5Password => {
+      case AuthenticationMD5Password       =>
         val bytes = new Array[Byte](b.readableBytes())
         b.readBytes(bytes)
         new AuthenticationChallengeMD5(bytes)
-      }
-      case _ => {
+      case AuthenticationSASL              =>
+        val bytes = new Array[Byte](b.readableBytes())
+        b.readBytes(bytes)
+        AuthenticationSASLMessage(SaslEngine.parseSaslMethodList(bytes))
+      case AuthenticationSASLContinue      =>
+        val bytes = new Array[Byte](b.readableBytes())
+        b.readBytes(bytes)
+
+        val msg = new String(bytes).parseScramMessage[ServerFirstMessage] match {
+          case Right(m)    => m
+          case Left(cause) => throw new UnsupportedAuthenticationMethodException(cause)
+        }
+        AuthenticationSASLContinueMessage(msg)
+      case AuthenticationSASLFinal         =>
+        val bytes = new Array[Byte](b.readableBytes())
+        b.readBytes(bytes)
+
+        val msg = new String(bytes).parseScramMessage[ServerFinalMessage] match {
+          case Right(m)    => m
+          case Left(cause) => throw new UnsupportedAuthenticationMethodException(cause)
+        }
+        AuthenticationSASLFinalMessage(msg)
+      case _                               =>
         throw new UnsupportedAuthenticationMethodException(authenticationType)
-      }
 
     }
-
   }
-
 }

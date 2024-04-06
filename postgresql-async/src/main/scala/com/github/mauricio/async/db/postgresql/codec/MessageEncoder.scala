@@ -40,12 +40,16 @@ class MessageEncoder(charset: Charset, encoderRegistry: ColumnEncoderRegistry) e
   private val startupEncoder = new StartupMessageEncoder(charset)
   private val queryEncoder = new QueryMessageEncoder(charset)
   private val credentialEncoder = new CredentialEncoder(charset)
+  private val saslInitialEncoder = new SASLInitialResponseEncoder(charset)
+  private val saslEncoder = new SASLResponseEncoder(charset)
 
   override def encode(ctx: ChannelHandlerContext, msg: AnyRef, out: java.util.List[Object]) = {
 
     val buffer = msg match {
       case SSLRequestMessage => SSLMessageEncoder.encode()
       case message: StartupMessage => startupEncoder.encode(message)
+      case message: SASLInitialResponse => saslInitialEncoder.encode(message)
+      case message: SASLResponse => saslEncoder.encode(message)
       case message: ClientMessage => {
         val encoder = (message.kind: @switch) match {
           case ServerMessage.Close => CloseMessageEncoder

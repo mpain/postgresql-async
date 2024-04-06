@@ -18,23 +18,25 @@ package com.github.mauricio.async.db.postgresql
 
 import com.github.mauricio.async.db.QueryResult
 import com.github.mauricio.async.db.column.{ColumnDecoderRegistry, ColumnEncoderRegistry}
-import com.github.mauricio.async.db.exceptions.{ConnectionStillRunningQueryException, InsufficientParametersException}
+import com.github.mauricio.async.db.exceptions.{ConnectionStillRunningQueryException, DatabaseException, InsufficientParametersException}
 import com.github.mauricio.async.db.general.MutableResultSet
 import com.github.mauricio.async.db.pool.TimeoutScheduler
 import com.github.mauricio.async.db.postgresql.codec.{PostgreSQLConnectionDelegate, PostgreSQLConnectionHandler}
 import com.github.mauricio.async.db.postgresql.column.{PostgreSQLColumnDecoderRegistry, PostgreSQLColumnEncoderRegistry}
 import com.github.mauricio.async.db.postgresql.exceptions._
+import com.github.mauricio.async.db.postgresql.sasl.SaslEngine
+import com.github.mauricio.async.db.postgresql.sasl.SaslEngine.SASLContext
 import com.github.mauricio.async.db.util._
 import com.github.mauricio.async.db.{Configuration, Connection}
-import java.util.concurrent.atomic.{AtomicInteger, AtomicLong, AtomicReference}
 
+import java.util.concurrent.atomic.{AtomicInteger, AtomicLong, AtomicReference}
 import messages.backend._
 import messages.frontend._
 
 import scala.concurrent._
 import io.netty.channel.EventLoopGroup
-import java.util.concurrent.CopyOnWriteArrayList
 
+import java.util.concurrent.CopyOnWriteArrayList
 import com.github.mauricio.async.db.postgresql.util.URLParser
 
 object PostgreSQLConnection {
@@ -81,8 +83,10 @@ class PostgreSQLConnection
   private var currentPreparedStatement: Option[PreparedStatementHolder] = None
   private var version = Version(0,0,0)
   private var notifyListeners = new CopyOnWriteArrayList[NotificationResponse => Unit]()
-  
+
   private var queryResult: Option[QueryResult] = None
+
+  private var saslCtx: Option[SASLContext] = None
 
   override def eventLoopGroup : EventLoopGroup = group
   def isReadyForQuery: Boolean = this.queryPromise.isEmpty
@@ -228,6 +232,7 @@ class PostgreSQLConnection
       case m: AuthenticationOkMessage => {
         log.debug("Successfully logged in to database")
         this.authenticated = true
+        saslCtx = None
       }
       case m: AuthenticationChallengeCleartextMessage => {
         write(this.credential(m))
@@ -235,8 +240,34 @@ class PostgreSQLConnection
       case m: AuthenticationChallengeMD5 => {
         write(this.credential(m))
       }
+      case m: AuthenticationSASLMessage =>
+        if (configuration.username != null) {
+          val (ctx, message) = SaslEngine.createSaslInitialResponse(m, configuration.username)
+          saslCtx = Option(ctx)
+          write(message)
+        } else {
+          throw new DatabaseException(s"Missing username: ${configuration.username}")
+        }
+      case m: AuthenticationSASLContinueMessage =>
+        saslCtx.flatMap { ctx =>
+          configuration.password.map { password =>
+            val (updated, message) = SaslEngine.createSaslResponse(ctx, m, password)
+            saslCtx = Option(updated)
+            write(message)
+          }
+        } getOrElse {
+          throw new DatabaseException(s"Missing ctx: $saslCtx or password: ${configuration.password}")
+        }
+      case m: AuthenticationSASLFinalMessage =>
+        saslCtx.map { ctx =>
+          if (!SaslEngine.validateContext(ctx, m)) {
+            saslCtx = None
+            throw new DatabaseException(s"Bas server proof: $ctx, ${m.msg.toScramMessage}")
+          } else ()
+        } getOrElse {
+          throw new DatabaseException(s"Missing ctx: $saslCtx or password: ${configuration.password}")
+        }
     }
-
   }
 
   override def onNotificationResponse( message : NotificationResponse ) {
