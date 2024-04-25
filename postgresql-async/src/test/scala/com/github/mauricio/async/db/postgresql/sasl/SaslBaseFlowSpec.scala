@@ -1,27 +1,16 @@
-package com.github.mauricio.async.db.sasl
+package com.github.mauricio.async.db.postgresql.sasl
 
-import com.github.mauricio.async.db.postgresql.sasl.ScramMessages.{
-  ClientFinalMessage,
-  ClientFirstMessage,
-  ParseScramMessageOps,
-  ServerFinalMessage,
-  ServerFirstMessage
-}
-import com.github.mauricio.async.db.sasl.SaslBaseFlowSpec.{PBKDF2_ALGORITHM, PBKDF2_KEY_LENGTH}
-import org.specs2.matcher.Matchers.beFalse
+import com.github.mauricio.async.db.postgresql.sasl.SaslEngine._
+import com.github.mauricio.async.db.postgresql.sasl.ScramMessages.{ClientFinalMessage, ClientFirstMessage, ParseScramMessageOps, ServerFinalMessage, ServerFirstMessage}
+import SaslBaseFlowSpec.PBKDF2_KEY_LENGTH
 import org.specs2.mutable.Specification
 
 import java.security.MessageDigest
 import java.util.Base64
-import javax.crypto.spec.{PBEKeySpec, SecretKeySpec}
-import javax.crypto.{Mac, SecretKeyFactory}
 import scala.annotation.tailrec
-import scala.util.Random
 
 object SaslBaseFlowSpec {
-  val PBKDF2_ALGORITHM: String = "PBKDF2WithHmacSHA256"
   val PBKDF2_KEY_LENGTH: Int   = MessageDigest.getInstance("SHA-256").getDigestLength
-
 }
 
 class SaslBaseFlowSpec extends Specification {
@@ -35,13 +24,6 @@ class SaslBaseFlowSpec extends Specification {
    C: c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,p=dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=
    S: v=6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=
    */
-
-  def hi(password: String, salt: Array[Byte], iterations: Int): Array[Byte] = {
-    val spec = new PBEKeySpec(password.toCharArray, salt, iterations, PBKDF2_KEY_LENGTH * 8)
-    val skf  = SecretKeyFactory.getInstance(PBKDF2_ALGORITHM)
-    val key  = skf.generateSecret(spec)
-    key.getEncoded
-  }
 
   def hiAlt(data: String, salt: Array[Byte], iterations: Int): Array[Byte] = {
     val bytes = data.getBytes
@@ -59,29 +41,6 @@ class SaslBaseFlowSpec extends Specification {
           step(hi, ui, i - 1)
       }
     step(new Array[Byte](PBKDF2_KEY_LENGTH), new Array[Byte](PBKDF2_KEY_LENGTH), iterations)
-  }
-
-  def hmac(key: Array[Byte], str: Array[Byte]): Array[Byte] = {
-    val mac = Mac.getInstance("HmacSHA256")
-    mac.init(new SecretKeySpec(key, "HmacSHA256"))
-    mac.doFinal(str)
-  }
-
-  def hash(bytes: Array[Byte]): Array[Byte] = MessageDigest.getInstance("SHA-256").digest(bytes)
-
-  def xor(right: Array[Byte], left: Array[Byte]): Array[Byte] =
-    right.zip(left).map(t => (t._1 ^ t._2).toByte)
-
-  def toHex(bytes: Array[Byte]): String = bytes.map(_.formatted("%02x")).mkString
-
-  def random(length: Int): String = {
-    val random = new Random()
-    val result = new Array[Byte](length)
-    (0 until length).foreach { i =>
-      val data = (random.nextInt(127 - 33) + 33).toByte
-      result.update(i, if (data == ','.toByte) 126.toByte else data)
-    }
-    new String(result)
   }
 
   "An engine" should {

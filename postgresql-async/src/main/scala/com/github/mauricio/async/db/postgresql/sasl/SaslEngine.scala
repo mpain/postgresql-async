@@ -19,12 +19,19 @@ import javax.crypto.{Mac, SecretKeyFactory}
 import scala.annotation.tailrec
 import scala.util.Random
 
+/**
+ * Engine contains definition of calculation SASL mechanism which is used for SCRAM
+ * @see [[https://datatracker.ietf.org/doc/html/rfc5802 RFC-5802]]
+ *      [[https://www.improving.com/thoughts/making-sense-of-scram-sha-256-authentication-in-mongodb Article about SCRAM]]
+ *      for more info about SCRAM
+ */
 object SaslEngine {
-  val SaslNonceLength = 20
-  val SaslHeader      = "n,,"
-  val SaslMechanism   = "SCRAM-SHA-256"
 
-  case class SASLContext(firstMsg: ClientFirstMessage, ourServerProof: Option[String])
+  val SaslHeader      = "n,,"
+  private val SaslNonceLength = 20
+  private val SaslMechanism   = "SCRAM-SHA-256"
+
+  case class SASLContext(firstMsg: ClientFirstMessage, serverProof: Option[String])
 
   private val HashAlg = "SHA-256"
   private val MacAlg  = "HmacSHA256"
@@ -34,25 +41,25 @@ object SaslEngine {
 
   private val log = Log.getByName(this.getClass.getName)
 
-  private def hi(password: String, salt: Array[Byte], iterations: Int): Array[Byte] = {
+  private[sasl] def hi(password: String, salt: Array[Byte], iterations: Int): Array[Byte] = {
     val spec = new PBEKeySpec(password.toCharArray, salt, iterations, Pbkdf2KeyLength * 8)
     val skf  = SecretKeyFactory.getInstance(Pbkdf2Alg)
     val key  = skf.generateSecret(spec)
     key.getEncoded
   }
 
-  private def hmac(key: Array[Byte], str: Array[Byte]): Array[Byte] = {
+  private[sasl] def hmac(key: Array[Byte], str: Array[Byte]): Array[Byte] = {
     val mac = Mac.getInstance(MacAlg)
     mac.init(new SecretKeySpec(key, MacAlg))
     mac.doFinal(str)
   }
 
-  private def hash(bytes: Array[Byte]): Array[Byte] = MessageDigest.getInstance(HashAlg).digest(bytes)
+  private[sasl] def hash(bytes: Array[Byte]): Array[Byte] = MessageDigest.getInstance(HashAlg).digest(bytes)
 
-  private def xor(right: Array[Byte], left: Array[Byte]): Array[Byte] =
+  private[sasl] def xor(right: Array[Byte], left: Array[Byte]): Array[Byte] =
     right.zip(left).map(t => (t._1 ^ t._2).toByte)
 
-  private def random(length: Int): String = {
+  private[sasl] def random(length: Int): String = {
     val random = new Random()
     val result = new Array[Byte](length)
     (0 until length).foreach { i =>
@@ -62,7 +69,7 @@ object SaslEngine {
     new String(result)
   }
 
-  private def toHex(bytes: Array[Byte]): String = bytes.map(_.formatted("%02x")).mkString
+  private[sasl] def toHex(bytes: Array[Byte]): String = bytes.map(_.formatted("%02x")).mkString
 
   private def debug(msg: => String): Unit = if (log.isDebugEnabled) log.debug(msg)
 
@@ -126,13 +133,13 @@ object SaslEngine {
     val serverProof = Base64.getEncoder.encodeToString(hmac(serverKey, authMessage.getBytes))
     debug(s"ServerProof: $serverProof")
 
-    (ctx.copy(ourServerProof = Option(serverProof)), SASLResponse(clientFinalMsg))
+    (ctx.copy(serverProof = Option(serverProof)), SASLResponse(clientFinalMsg))
   }
 
-  def validateContext(ctx: SASLContext, msg: AuthenticationSASLFinalMessage): Boolean =
-    ctx.ourServerProof.exists { proof =>
-      val theirProof = Base64.getEncoder.encodeToString(msg.msg.serverProof)
-      debug(s"ourProof: $proof, their: $theirProof")
-      msg.msg.serverProof.nonEmpty && proof == theirProof
+  def validateFinalMessageProof(ctx: SASLContext, finalMessage: AuthenticationSASLFinalMessage): Boolean =
+    ctx.serverProof.exists { ctxServerProof =>
+      val serverFinalMessageProof = Base64.getEncoder.encodeToString(finalMessage.msg.serverProof)
+      debug(s"ServerProof on client side: $ctxServerProof, ServerProof from server side in final message: $serverFinalMessageProof")
+      finalMessage.msg.serverProof.nonEmpty && ctxServerProof == serverFinalMessageProof
     }
 }
