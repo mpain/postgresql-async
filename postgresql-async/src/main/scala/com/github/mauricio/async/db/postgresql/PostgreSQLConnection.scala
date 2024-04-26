@@ -24,7 +24,7 @@ import com.github.mauricio.async.db.pool.TimeoutScheduler
 import com.github.mauricio.async.db.postgresql.codec.{PostgreSQLConnectionDelegate, PostgreSQLConnectionHandler}
 import com.github.mauricio.async.db.postgresql.column.{PostgreSQLColumnDecoderRegistry, PostgreSQLColumnEncoderRegistry}
 import com.github.mauricio.async.db.postgresql.exceptions._
-import com.github.mauricio.async.db.postgresql.sasl.SaslEngine
+import com.github.mauricio.async.db.postgresql.sasl.{InvalidFinalServerMessageProof, MissingAuthParamException, SaslEngine}
 import com.github.mauricio.async.db.postgresql.sasl.SaslEngine.SASLContext
 import com.github.mauricio.async.db.util._
 import com.github.mauricio.async.db.{Configuration, Connection}
@@ -229,7 +229,7 @@ class PostgreSQLConnection
   override def onAuthenticationResponse(message: AuthenticationMessage) {
 
     message match {
-      case m: AuthenticationOkMessage => {
+      case _: AuthenticationOkMessage => {
         log.debug("Successfully logged in to database")
         this.authenticated = true
         saslCtx = None
@@ -246,7 +246,7 @@ class PostgreSQLConnection
           saslCtx = Option(ctx)
           write(message)
         } else {
-          throw new DatabaseException(s"Missing username: ${configuration.username}")
+          throw new MissingAuthParamException(isUsernameEmpty = true, ctx=Option.empty[SASLContext], password = Option.empty[String])
         }
       case m: AuthenticationSASLContinueMessage =>
         saslCtx.flatMap { ctx =>
@@ -256,16 +256,16 @@ class PostgreSQLConnection
             write(message)
           }
         } getOrElse {
-          throw new DatabaseException(s"Missing ctx: $saslCtx or password: ${configuration.password}")
+          throw new MissingAuthParamException(isUsernameEmpty = false, ctx = saslCtx, password = configuration.password)
         }
       case m: AuthenticationSASLFinalMessage =>
         saslCtx.map { ctx =>
-          if (!SaslEngine.validateContext(ctx, m)) {
+          if (!SaslEngine.validateFinalMessageProof(ctx, m)) {
             saslCtx = None
-            throw new DatabaseException(s"Bas server proof: $ctx, ${m.msg.toScramMessage}")
+            throw new InvalidFinalServerMessageProof(m.msg)
           } else ()
         } getOrElse {
-          throw new DatabaseException(s"Missing ctx: $saslCtx or password: ${configuration.password}")
+          throw new MissingAuthParamException(isUsernameEmpty = false, ctx = saslCtx, password = configuration.password)
         }
     }
   }
